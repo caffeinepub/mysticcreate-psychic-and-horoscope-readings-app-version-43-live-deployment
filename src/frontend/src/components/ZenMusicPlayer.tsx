@@ -5,65 +5,120 @@ interface ZenMusicPlayerProps {
   isBlueTheme: boolean;
 }
 
+// Generates a looping ambient zen soundscape using Web Audio API
+function createZenSoundscape(ctx: AudioContext): () => void {
+  const masterGain = ctx.createGain();
+  masterGain.gain.setValueAtTime(0.5, ctx.currentTime);
+  masterGain.connect(ctx.destination);
+
+  const nodes: AudioNode[] = [masterGain];
+
+  // Drone tones — layered low sine waves for a mystical pad
+  const drones: [number, number][] = [
+    [110, 0.18],
+    [165, 0.12],
+    [220, 0.09],
+    [277.18, 0.06],
+    [330, 0.05],
+  ];
+
+  for (const [freq, gain] of drones) {
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    g.gain.value = gain;
+    osc.connect(g);
+    g.connect(masterGain);
+    osc.start();
+    nodes.push(osc, g);
+  }
+
+  // Slow LFO for a gentle breathing effect
+  const lfo = ctx.createOscillator();
+  const lfoGain = ctx.createGain();
+  lfo.type = "sine";
+  lfo.frequency.value = 0.08;
+  lfoGain.gain.value = 0.12;
+  lfo.connect(lfoGain);
+  lfoGain.connect(masterGain.gain);
+  lfo.start();
+  nodes.push(lfo, lfoGain);
+
+  // Crystal chime tones pulsing periodically
+  const crystalFreqs = [880, 1108.73, 1320, 1760];
+  let crystalIdx = 0;
+
+  const playChime = () => {
+    const osc = ctx.createOscillator();
+    const env = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = crystalFreqs[crystalIdx % crystalFreqs.length];
+    crystalIdx++;
+    const t = ctx.currentTime;
+    env.gain.setValueAtTime(0, t);
+    env.gain.linearRampToValueAtTime(0.08, t + 0.05);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + 3.5);
+    osc.connect(env);
+    env.connect(masterGain);
+    osc.start(t);
+    osc.stop(t + 4);
+  };
+
+  playChime();
+  const interval = window.setInterval(playChime, 4200);
+
+  return () => {
+    clearInterval(interval);
+    for (const n of nodes) {
+      try {
+        (n as OscillatorNode).stop?.();
+        n.disconnect();
+      } catch (_) {
+        // ignore
+      }
+    }
+  };
+}
+
 export default function ZenMusicPlayer({ isBlueTheme }: ZenMusicPlayerProps) {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const ctxRef = useRef<AudioContext | null>(null);
+  const stopRef = useRef<(() => void) | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [showTooltip, setShowTooltip] = useState(false);
+  const [showTooltip, setShowTooltip] = useState(true);
 
   useEffect(() => {
-    const audio = new Audio(
-      "https://cdn.pixabay.com/audio/2022/03/10/audio_270f5f9a4d.mp3",
-    );
-    audio.loop = true;
-    audio.volume = 0.5;
-    audioRef.current = audio;
-
-    // Attempt autoplay
-    const playPromise = audio.play();
-    if (playPromise !== undefined) {
-      playPromise
-        .then(() => {
-          setIsPlaying(true);
-        })
-        .catch(() => {
-          // Autoplay blocked by browser — show tooltip hint
-          setIsPlaying(false);
-          setTimeout(() => setShowTooltip(true), 1500);
-        });
-    }
-
+    const t = setTimeout(() => setShowTooltip(true), 800);
     return () => {
-      audio.pause();
-      audio.src = "";
-      audioRef.current = null;
+      clearTimeout(t);
+      stopRef.current?.();
+      ctxRef.current?.close();
     };
   }, []);
 
   const handleToggle = () => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    // Dismiss tooltip on first user interaction
     setShowTooltip(false);
 
     if (isPlaying) {
-      audio.pause();
+      stopRef.current?.();
+      stopRef.current = null;
+      ctxRef.current?.suspend();
       setIsPlaying(false);
     } else {
-      audio
-        .play()
-        .then(() => {
-          setIsPlaying(true);
-        })
-        .catch(() => {
-          setIsPlaying(false);
-        });
+      if (!ctxRef.current || ctxRef.current.state === "closed") {
+        ctxRef.current = new AudioContext();
+      }
+      if (ctxRef.current.state === "suspended") {
+        ctxRef.current.resume();
+      }
+      stopRef.current?.();
+      stopRef.current = createZenSoundscape(ctxRef.current);
+      setIsPlaying(true);
     }
   };
 
   return (
     <div className="fixed bottom-40 right-6 z-50 flex flex-col items-center gap-2">
-      {/* Tooltip / badge for blocked autoplay */}
       {showTooltip && !isPlaying && (
         <div
           className={`
@@ -81,11 +136,9 @@ export default function ZenMusicPlayer({ isBlueTheme }: ZenMusicPlayerProps) {
         </div>
       )}
 
-      {/* Play/Pause button */}
       <button
         type="button"
         onClick={handleToggle}
-        data-ocid="music.toggle"
         aria-label={isPlaying ? "Pause zen music" : "Play zen music"}
         className={`
           relative w-12 h-12 rounded-full
@@ -103,7 +156,6 @@ export default function ZenMusicPlayer({ isBlueTheme }: ZenMusicPlayerProps) {
           <Pause
             className={`
               w-5 h-5 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
-              transition-colors duration-500 ease-in-out
               ${isBlueTheme ? "text-blue-200" : "text-yellow-200"}
             `}
           />
@@ -111,7 +163,6 @@ export default function ZenMusicPlayer({ isBlueTheme }: ZenMusicPlayerProps) {
           <Play
             className={`
               w-5 h-5 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
-              transition-colors duration-500 ease-in-out
               ${isBlueTheme ? "text-blue-200" : "text-yellow-200"}
             `}
           />
